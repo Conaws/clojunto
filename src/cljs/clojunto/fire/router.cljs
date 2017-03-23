@@ -2,11 +2,10 @@
   (:require
    [posh.core :as posh :refer [posh!]]
    [datascript.core :as d]
-   [re-kindle.util :refer [safe]]
-   [re-kindle.fire.auth :refer [user]]
+   [clojunto.fire.auth :refer [user]]
    [cljs-time.format :as format]
    [cljs.tools.reader.edn :as edn]
-   [re-kindle.fire.core :as core :refer [db-ref save]]
+   [clojunto.fire.core :as core :refer [db-ref save]]
    [cljs.core.async :as async]
    [taoensso.timbre :as log]
    [cljs.spec :as s]
@@ -23,34 +22,9 @@
                            :conn @conn})))
 
 
-(s/def ::once-args (s/cat :path vector?
-                          :startk :re-kindle.specs/RAtom
-                          :startval :re-kindle.specs/RAtom
-                          :schema map?
-                          :component fn?))
-
-
-#_(defn read-uuid
-   [form]
-   (when-not (string? form)
-     (throw (js/Error. "UUID literal expects a string as its representation.")))
-   (try
-     (uuid form)
-     (catch :default e
-       (throw (js/Error. (. e -message))))))
-
-(def readers (merge
-              {:readers d/data-readers}
-              {}
-              #_{'uuid
-               read-uuid}
-              ))
-
+(def readers  {:readers d/data-readers})
 
 (defn load-conn [path startk startval schema component]
-  (try (assert (s/valid? ::once-args [path startk startval schema component]))
-       (catch js/Object e
-         (pr-str (s/explain ::once-args [path startk startval schema component]))))
   (let [ref (db-ref path)]
     (.. ref
         (once "value"
@@ -58,17 +32,12 @@
                 (try
                   (if-let [{k :snapshot-key db :conn} (edn/read-string readers (.val x))]
                     (let [datoms (set (d/datoms db :eavt))
-                          ;; _ (js/console.log datoms)
-                          conn (d/conn-from-datoms datoms schema)
-                          ;; _ (js/console.log "schema" schema)
-                          ]
+                          conn (d/conn-from-datoms datoms schema)]
                       (do (posh! conn)
                           (reset! startval conn)
                           (reset! startk k)
                           (log/debugf "this is the k %s" (pr-str k))
-                          (log/debugf "this is the startval %s" (pr-str @startval))
-
-                          ))
+                          (log/debugf "this is the startval %s" (pr-str @startval))))
                     (save-snapshot path ":NEW" (d/create-conn schema))
                     )
                   (catch js/Object e
@@ -88,8 +57,7 @@
 
 (defn on-rolling [path startk startval snappath component]
   (let [ref (db-ref path)]
-    (if  (or (= ":NEW"
-                startk)
+    (if  (or (= ":NEW" startk)
              (nil? startk))
       (.. ref
           (on "child_added"
@@ -99,15 +67,10 @@
                       parsed-val (edn/read-string {:readers d/data-readers} val)
                       tx (:tx parsed-val)]
                   (do
-
                     (log/debugf "running on all child-added %s" (pr-str parsed-val))
                     (d/transact! @startval tx)
-                    ;; (handle-event* @startval path wid parsed-val)
-                    (save-snapshot snappath k @startval)
-                    )
-                  ))))
+                    (save-snapshot snappath k @startval))))))
       (.. ref
-          ;; (limitToLast 1)
           orderByKey
           (startAt (clj->js startk))
           (on "child_added"
@@ -117,12 +80,8 @@
                   (try
                    (if-let [parsed-val (edn/read-string {:readers d/data-readers} val)]
                       (do
-                        ;; (handle-event* @startval path wid parsed-val)
                         (d/transact! @startval (:tx parsed-val))
-                        (save-snapshot snappath k @startval)
-                        ;; (log/debugf "this is the startval %s" (pr-str @startval))
-
-                        )
+                        (save-snapshot snappath k @startval) )
                       (println "Bad parse" val))
                       (catch js/Object e
                         (println e val)))
@@ -158,40 +117,6 @@
   (log/debugf "Unhandled event: %s" (pr-str msg))
   nil)
 
-
-
-
-;; (defn handle-event* [conn txpath wid msg]
-;;   (log/debugf "handling event %s" (:msg msg))
-
-;;   (let [{:as ret :keys [tx followup]} (handle-event conn (:msg msg) {:msg-wid
-;;                                                                      (:wid msg)
-;;                                                                      :wid wid})]
-;;     ;; handle-event
-;;     (log/tracef "Handler returned: %s" (pr-str ret))
-;;     (when tx
-;;       (log/debugf "Transacting: %s" (pr-str tx))
-;;       (let [x (d/transact! conn tx)
-;;             z (-> x :tempids)]
-;;         (when followup
-;;           (go (async/<! (async/timeout 1))
-;;               (transact! txpath wid (conj followup z)))
-;;           )
-
-;;         ))
-;;     (when (= wid (:wid msg))
-;;       (doseq [new-msg (:dispatch ret)]
-;;         (transact! txpath wid new-msg))
-
-;;       (doseq [[to new-msg] (:dispatch-later ret)]
-;;         (go
-;;           (async/<! (async/timeout to))
-;;           (transact! txpath wid new-msg)
-;;           )
-;;         ))
-;;     )
-  
-;;   )
 
 
 (defn dispatch [ch msg]
